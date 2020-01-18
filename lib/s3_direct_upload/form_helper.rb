@@ -30,9 +30,13 @@ module S3DirectUpload
           callback_param: "file",
           key_starts_with: @key_starts_with,
           key: key,
-          server_side_encryption: nil
+          server_side_encryption: nil,
+          date: Time.now.utc.strftime("%Y%m%d"),
+          timestamp: Time.now.utc.strftime("%Y%m%dT%H%M%SZ")
         )
       end
+
+
 
       def wrapper_options
         {
@@ -48,12 +52,14 @@ module S3DirectUpload
 
       def fields
         {
-          :key => @options[:key] || key,
           :acl => @options[:acl],
-          "AWSAccessKeyId" => @options[:aws_access_key_id],
+          :key => @options[:key] || key,
           :policy => policy,
-          :signature => signature,
           :success_action_status => "201",
+          'X-Amz-Algorithm' => 'AWS4-HMAC-SHA256',
+          'X-Amz-Credential' => "#{@options[:aws_access_key_id]}/#{@options[:date]}/#{S3DirectUpload.config.region}/s3/aws4_request",
+          'X-Amz-Date' => @options[:timestamp],
+          'X-Amz-Signature' => signature,
           'X-Requested-With' => 'xhr',
           "x-amz-server-side-encryption" => @options[:server_side_encryption]
         }.delete_if { |k, v| v.nil? }
@@ -77,9 +83,22 @@ module S3DirectUpload
             ["starts-with","$content-type", @options[:content_type_starts_with] ||""],
             {bucket: @options[:bucket]},
             {acl: @options[:acl]},
-            {success_action_status: "201"}
+            {success_action_status: "201"},
+            {'X-Amz-Algorithm' => 'AWS4-HMAC-SHA256'},
+            {'X-Amz-Credential' => "#{@options[:aws_access_key_id]}/#{@options[:date]}/#{S3DirectUpload.config.region}/s3/aws4_request"},
+            {'X-Amz-Date' => @options[:timestamp]}
+
           ] + server_side_encryption + (@options[:conditions] || [])
         }
+      end
+
+      def signing_key
+        #AWS Signature Version 4
+        kDate    = OpenSSL::HMAC.digest('sha256', "AWS4" + @options[:aws_secret_access_key], @options[:date])
+        kRegion  = OpenSSL::HMAC.digest('sha256', kDate, S3DirectUpload.config.region)
+        kService = OpenSSL::HMAC.digest('sha256', kRegion, 's3')
+        kSigning = OpenSSL::HMAC.digest('sha256', kService, "aws4_request")
+        kSigning
       end
 
       def server_side_encryption
@@ -91,12 +110,7 @@ module S3DirectUpload
       end
 
       def signature
-        Base64.encode64(
-          OpenSSL::HMAC.digest(
-            OpenSSL::Digest.new('sha1'),
-            @options[:aws_secret_access_key], policy
-          )
-        ).gsub("\n", "")
+        OpenSSL::HMAC.hexdigest('sha256', signing_key, policy)
       end
     end
   end
